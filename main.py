@@ -8,7 +8,7 @@ from scipy.cluster import hierarchy
 import json
 
 
-def _bulkspectra(df, threshold=15, weighted=False, component_path=None, img_path=None):
+def _bulkspectra(df, threshold=15, weighted=False):
     '''
     処理の手順
     1. ラマンスペクトル間の相関を計算し、クラスタリングを実施する
@@ -101,7 +101,7 @@ def _bulkspectra(df, threshold=15, weighted=False, component_path=None, img_path
 
     # 相関係数を用いてクラスタリングする
     # クラスタIDに基づいて同一クラスタのラマンシフトをまとめる
-    agg_ramanshifts = corr_clustering(df, 0.5)
+    agg_ramanshifts = corr_clustering(df)
 
     # 各クラスタのバンド間の距離に基づきクラスタを分割し、
     # 分割後のサブクラスタ群と、重複するクラスタIDを返却する
@@ -140,16 +140,7 @@ def _bulkspectra(df, threshold=15, weighted=False, component_path=None, img_path
     reduced.columns = highests
     print(reduced)
 
-    if component_path is not None:
-        agg_ramanshifts = {k: [int(vv) for vv in v] for k, v in agg_ramanshifts.items()}
-        with open(component_path, "w") as f:
-            json.dump(agg_ramanshifts, f, indent=4)
-
-    if img_path is not None:
-        # TODO: 可視化を実装する
-        pass
-
-    return reduced
+    return reduced, agg_ramanshifts
 
 
 def _peakpick(df, label, distance, img_path=None):
@@ -219,22 +210,39 @@ def peakpick(ctx, path, vis, output_path, label, distance, img_path):
 
 @cmd.command()
 @click.argument("path")
+@click.option("--dist_th", default=15)
+@click.option("--weighted", is_flag=False)
 @click.option("--vis", is_flag=True)
 @click.option("--output_path", "-op", default="output/bulkspectra.csv")
 @click.option("--img_path", "-ip", default="img/bulkspectra.png")
 @click.option("--comp_path", "-cp", default="comp/bulkspectra.json")
 @click.pass_context
-def bulkspectra(ctx, path, vis, output_path, img_path, comp_path):
+def bulkspectra(ctx, path, dist_th, weighted, vis, output_path, img_path, comp_path):
     df = pd.read_csv(path, header=0, index_col=0)
     click.echo(df)
 
-    reduced = _bulkspectra(
+    reduced, agg_ramanshifts = _bulkspectra(
         df,
-        weighted=True,
-        img_path=img_path,
-        component_path=comp_path,
+        threshold=dist_th,
+        weighted=weighted,
     )
     reduced.to_csv(output_path)
+
+    if comp_path is not None:
+        agg_ramanshifts = {k: [int(vv) for vv in v] for k, v in agg_ramanshifts.items()}
+        with open(comp_path, "w") as f:
+            json.dump(agg_ramanshifts, f, indent=4)
+
+    if img_path is not None:
+        import matplotlib.ticker as ticker
+        fig = plt.figure(figsize=(12, 12), dpi=300)
+        ax = fig.add_subplot(2, 1, 1)
+        ax.plot(df.mean())
+        ax.xaxis.set_major_locator(ticker.MultipleLocator(50))
+        ax = fig.add_subplot(2, 1, 2)
+        ax.plot(reduced.mean())
+        ax.xaxis.set_major_locator(ticker.MultipleLocator(50))
+        fig.savefig(img_path)
 
 
 @cmd.command()
