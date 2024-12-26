@@ -8,7 +8,34 @@ from scipy.cluster import hierarchy
 import json
 
 
-def _bulkspectra(df, threshold=15, weighted=False):
+def plot_dendrogram(Z, th, labels, img_path):
+    n_leaves = len(labels)
+    min_width = 4
+    max_width = 36
+    width = min(max(n_leaves * 0.1, min_width), max_width)
+
+    if n_leaves > 1000:
+        fontsize = 2
+    else:
+        fontsize = 4
+
+    fig = plt.figure(figsize=(width, 6), dpi=300)
+    ax = fig.add_subplot(1, 1, 1)
+    hierarchy.dendrogram(
+        Z,
+        ax=ax,
+        leaf_rotation=90,
+        color_threshold=th,
+        leaf_font_size=fontsize,
+        labels=labels,
+    )
+    plt.tight_layout()
+    fig.savefig(img_path)
+    print(f"output: medium dendrogram to {img_path}")
+    return
+
+
+def _bulkspectra(df, corr_th=0.2, dist_th=15, weighted=False):
     '''
     処理の手順
     1. ラマンスペクトル間の相関を計算し、クラスタリングを実施する
@@ -22,10 +49,18 @@ def _bulkspectra(df, threshold=15, weighted=False):
     5. ラマンバンドの並びに基づき、新たな特徴量を昇順で並べる
     '''
 
-    def corr_clustering(df, threshold=0.2):
+    def corr_clustering(df, threshold=0.2, img_path="img/corr_dendrogram.png"):
+        '''
+        異なるバンド間のラマン強度に基づくピアソンの相関係数を補正した指標を用いる
+        D = 1 - (corr(x, y) + 1) / 2
+        相関係数の範囲を -1 <= corr <= +1 から 0 <= (corr + 1) / 2 <= 1 へ変更し
+        1 から引くことで
+        0 から 1 の範囲の非類似度とする
+        '''
         dissimilarity = 1 - (df.corr() + 1) / 2
         dissimilarity = squareform(dissimilarity)
         Z = hierarchy.linkage(dissimilarity, method="average")
+        plot_dendrogram(Z, threshold, df.columns, img_path)
         cluster_ids = hierarchy.fcluster(Z, threshold, criterion="distance")
 
         # IDに基づいて同一クラスタのラマンシフトをまとめる
@@ -67,9 +102,9 @@ def _bulkspectra(df, threshold=15, weighted=False):
             _id = int(_id)
             ids_ramanbands.setdefault(_id, [])
             ids_ramanbands[_id].append(r)
-        return ids_ramanbands
+        return ids_ramanbands, Z
 
-    def divide_discontinuos(agg_ramanshifts):
+    def divide_discontinuos(agg_ramanshifts, dist_th):
         # 各クラスタid についてラマンバンド間の距離に基づくクラスタリングを実施する
         max_id = max(agg_ramanshifts.keys())
         update_clusters = []
@@ -83,11 +118,12 @@ def _bulkspectra(df, threshold=15, weighted=False):
             distance = calc_band_distance(ramanbands)
             if distance.mean() > 10:
                 # もし平均距離が大きい場合は分割対象とみなす
-                subcluster = bandwidth_clustering(
+                subcluster, Z = bandwidth_clustering(
                     distance,
                     ramanbands,
-                    threshold,
+                    dist_th,
                 )
+                plot_dendrogram(Z, dist_th, ramanbands, f"img/dist_dendrogram_{cluster_id}.png")
 
                 # サブクラスタに新たなidを払い出す
                 for _id, r in subcluster.items():
@@ -101,11 +137,11 @@ def _bulkspectra(df, threshold=15, weighted=False):
 
     # 相関係数を用いてクラスタリングする
     # クラスタIDに基づいて同一クラスタのラマンシフトをまとめる
-    agg_ramanshifts = corr_clustering(df)
+    agg_ramanshifts = corr_clustering(df, corr_th)
 
     # 各クラスタのバンド間の距離に基づきクラスタを分割し、
     # 分割後のサブクラスタ群と、重複するクラスタIDを返却する
-    subs, duplicate_ids = divide_discontinuos(agg_ramanshifts)
+    subs, duplicate_ids = divide_discontinuos(agg_ramanshifts, dist_th)
     for s in subs:
         agg_ramanshifts.update(s)
     for d in duplicate_ids:
@@ -210,6 +246,7 @@ def peakpick(ctx, path, vis, output_path, label, distance, img_path):
 
 @cmd.command()
 @click.argument("path")
+@click.option("--corr_th", default=0.2)
 @click.option("--dist_th", default=15)
 @click.option("--weighted", is_flag=False)
 @click.option("--vis", is_flag=True)
@@ -217,13 +254,14 @@ def peakpick(ctx, path, vis, output_path, label, distance, img_path):
 @click.option("--img_path", "-ip", default="img/bulkspectra.png")
 @click.option("--comp_path", "-cp", default="comp/bulkspectra.json")
 @click.pass_context
-def bulkspectra(ctx, path, dist_th, weighted, vis, output_path, img_path, comp_path):
+def bulkspectra(ctx, path, corr_th, dist_th, weighted, vis, output_path, img_path, comp_path):
     df = pd.read_csv(path, header=0, index_col=0)
     click.echo(df)
 
     reduced, agg_ramanshifts = _bulkspectra(
         df,
-        threshold=dist_th,
+        corr_th=corr_th,
+        dist_th=dist_th,
         weighted=weighted,
     )
     reduced.to_csv(output_path)
