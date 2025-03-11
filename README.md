@@ -1,2 +1,2 @@
-# raman-reduce
+# raman-squash
 ラマンスペクトルを次元圧縮しファイル出力するツール
