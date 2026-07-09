@@ -109,9 +109,9 @@ def _bulkspectra(df, corr_th=0.2, dist_th=15, weighted=False, optional_img=[]):
             ids_ramanbands[_id].append(r)
         return ids_ramanbands, Z
 
-    def divide_discontinuos(agg_ramanshifts, dist_th):
-        # 各クラスタid についてラマンバンド間の距離に基づくクラスタリングを実施する
-        max_id = max(agg_ramanshifts.keys())
+    def divide_discontinuos(agg_ramanshifts, dist_th, img_path=None):
+
+        max_id = max(agg_ramanshifts.keys())  # 新たなサブクラスタが生じた場合のid払い出しに使用
         update_clusters = []
         remove_ids = []
         for cluster_id, ramanbands in agg_ramanshifts.items():
@@ -147,9 +147,13 @@ def _bulkspectra(df, corr_th=0.2, dist_th=15, weighted=False, optional_img=[]):
 
         return update_clusters, remove_ids
 
-    # 相関係数を用いてクラスタリングする
-    # クラスタIDに基づいて同一クラスタのラマンシフトをまとめる
-    agg_ramanshifts = corr_clustering(df, corr_th)
+    # Step 1: 偽相関を持つ変数を階層型クラスタリングを用いて集約する
+    img_path = optional_img[0] if optional_img else None
+    agg_ramanshifts = corr_clustering(df, corr_th, img_path=img_path)
+
+    # Step 2: Step 1 で分類されたクラスタ内でカイザー間の距離が大きい要素を分割する
+    img_path = optional_img[1] if optional_img else None
+    subs, duplicate_ids = divide_discontinuos(agg_ramanshifts, dist_th, img_path=img_path)
 
     # Step 2-after: 分割後のクラスタの再登録と分割前のクラスタの削除
     for s in subs:
@@ -165,8 +169,9 @@ def _bulkspectra(df, corr_th=0.2, dist_th=15, weighted=False, optional_img=[]):
     reduced = pd.DataFrame()
     highests = []
     for _, ramanshifts in agg_ramanshifts.items():
-        ramanshifts = [str(r) for r in ramanshifts]
 
+        # 偽相関を持つラマンスペクトルを抽出
+        ramanshifts = [str(r) for r in ramanshifts]
         d = df.loc[:, ramanshifts]
 
         # クラスタ内ラマンシフトの平均強度の大きさに基づく重みを計算
@@ -258,25 +263,54 @@ def peakpick(ctx, path, vis, output_path, label, distance, img_path):
 
 @cmd.command()
 @click.argument("path")
-@click.option("--corr_th", default=0.2)
-@click.option("--dist_th", default=15)
-@click.option("--weighted", is_flag=False)
-@click.option("--vis", is_flag=True)
+# @click.option("--index_col", "-idx", default=0, help="default: 0")
+# @click.option("--ignore_col", "-ign", multiple=True, type=int, default=None, help="default: []")
+@click.option("--meta_col", "-m", multiple=True, type=int, default=None, help="default: []")
+@click.option("--corr_th", default=0.2, help="default: 0.2")
+@click.option("--dist_th", default=15, help="default: 15")
+@click.option("--weighted", is_flag=False, help="default: false")
+@click.option("--vis", is_flag=True, help="output or not: default: true")
 @click.option("--output_path", "-op", default="output/bulkspectra.csv")
 @click.option("--img_path", "-ip", default="img/bulkspectra.png")
 @click.option("--comp_path", "-cp", default="comp/bulkspectra.json")
+@click.option("--false_corr_img_path", "-fcip", default="img/dendrogram_false_corr.png")
+@click.option("--not_neighbor_img_path", "-nnip", default="img/dendrogram_not_neighbor.png")
 @click.pass_context
-def bulkspectra(ctx, path, corr_th, dist_th, weighted, vis, output_path, img_path, comp_path):
-    df = pd.read_csv(path, header=0, index_col=0)
+def bulkspectra(
+    ctx,
+    path,
+    meta_col,
+    # index_col,
+    # ignore_col,
+    corr_th,
+    dist_th,
+    weighted,
+    vis,
+    output_path,
+    img_path,
+    comp_path,
+    false_corr_img_path,
+    not_neighbor_img_path,
+):
+    df = pd.read_csv(path, header=0)
     click.echo(df)
+    if meta_col:
+        click.echo(f"! user operation: set metadata columns {meta_col}")
+        meta = df.iloc[:, list(meta_col)]
+        df = df.drop(columns=df.columns[list(meta_col)])
+        click.echo(df)
+    click.echo(df)
+    click.echo(meta)
+    origin_dim = len(df.columns)
 
+    # 偽相関な変数の集約 + カイザー(cm^-1)間の距離に基づく次元圧縮
     reduced, agg_ramanshifts = _bulkspectra(
         df,
         corr_th=corr_th,
         dist_th=dist_th,
         weighted=weighted,
+        optional_img=[false_corr_img_path, not_neighbor_img_path],
     )
-    reduced.to_csv(output_path)
 
     if comp_path is not None:
         agg_ramanshifts = {k: [int(vv) for vv in v] for k, v in agg_ramanshifts.items()}
@@ -295,6 +329,14 @@ def bulkspectra(ctx, path, corr_th, dist_th, weighted, vis, output_path, img_pat
         ax.set_xlabel("Ramanshifts (tick span is 50)")
         plt.tight_layout()
         fig.savefig(img_path)
+
+    # 低解像度化後のファイル出力
+    click.echo(f"reduction: origin({origin_dim}) > after({len(reduced.columns)})")
+    if meta_col:
+        reduced = pd.concat([meta, reduced], axis=1)
+        click.echo(f"Output with metadata(+ {len(meta.columns)} columns)")
+    reduced.to_csv(output_path)
+
 
 
 @cmd.command()
