@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from scipy.spatial.distance import squareform
 from scipy.cluster import hierarchy
 import json
+from pathlib import Path
 
 
 def plot_dendrogram(Z, th, labels, img_path):
@@ -135,6 +136,12 @@ def _bulkspectra(df, corr_th=0.2, dist_th=15, weighted=False):
 
                 # 分割対象の元のクラスタidを削除対象として記録する
                 remove_ids.append(cluster_id)
+
+                if img_path is not None:
+                    p = Path(img_path)
+                    img_path = str(p.with_name(f"{p.stem}_{cluster_id}{p.suffix}"))  # 出力ファイルにクラスタidを挿入
+                    plot_dendrogram(Z, dist_th, ramanbands, img_path)
+
         return update_clusters, remove_ids
 
     # 相関係数を用いてクラスタリングする
