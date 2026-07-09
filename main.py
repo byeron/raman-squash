@@ -263,9 +263,7 @@ def peakpick(ctx, path, vis, output_path, label, distance, img_path):
 
 @cmd.command()
 @click.argument("path")
-# @click.option("--index_col", "-idx", default=0, help="default: 0")
-# @click.option("--ignore_col", "-ign", multiple=True, type=int, default=None, help="default: []")
-@click.option("--meta_col", "-m", multiple=True, type=int, default=None, help="default: []")
+@click.option("--meta_col", "-m", multiple=True, type=int, default=[], help="default: []")
 @click.option("--corr_th", default=0.2, help="default: 0.2")
 @click.option("--dist_th", default=15, help="default: 15")
 @click.option("--weighted", is_flag=False, help="default: false")
@@ -280,8 +278,6 @@ def bulkspectra(
     ctx,
     path,
     meta_col,
-    # index_col,
-    # ignore_col,
     corr_th,
     dist_th,
     weighted,
