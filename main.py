@@ -36,7 +36,7 @@ def plot_dendrogram(Z, th, labels, img_path):
     return
 
 
-def _bulkspectra(df, corr_th=0.2, dist_th=15, weighted=False):
+def _bulkspectra(df, corr_th=0.2, dist_th=15, weighted=False, optional_img=[]):
     '''
     低解像度化処理の手順
     1. 偽相関をもつラマンスペクトルを集約するために、ラマンスペクトル間の相関を計算しクラスタリングする
@@ -49,7 +49,8 @@ def _bulkspectra(df, corr_th=0.2, dist_th=15, weighted=False):
     4. 計算された各クラスタの代表値を新たな特徴量とし、元のラマンバンドの並びに基づきソートする
     '''
 
-    def corr_clustering(df, threshold=0.2, img_path="img/corr_dendrogram.png"):
+    def corr_clustering(df, threshold=0.2, img_path=None):
+
         '''
         非類似度: D = 1 - (corr(x, y) + 1) / 2
         - 相関係数の範囲の変更: -1 <= corr <= +1 から 0 <= (corr + 1) / 2 <= 1
@@ -61,7 +62,6 @@ def _bulkspectra(df, corr_th=0.2, dist_th=15, weighted=False):
         # 階層型クラスタリングの実行
         dissimilarity = squareform(dissimilarity)
         Z = hierarchy.linkage(dissimilarity, method="average")
-        plot_dendrogram(Z, threshold, df.columns, img_path)
         cluster_ids = hierarchy.fcluster(Z, threshold, criterion="distance")
 
         # 非類似度のカットオフしきい値に基づくクラスタの分割
@@ -71,6 +71,10 @@ def _bulkspectra(df, corr_th=0.2, dist_th=15, weighted=False):
             agg_ramanshifts.setdefault(_id, [])
             features = df.columns.astype(int)
             agg_ramanshifts[_id].append(features[n])
+
+        # 集約時のデンドログラムを出力
+        if img_path is not None:
+            plot_dendrogram(Z, threshold, df.columns, img_path)
 
         return agg_ramanshifts
 
@@ -126,7 +130,6 @@ def _bulkspectra(df, corr_th=0.2, dist_th=15, weighted=False):
                     ramanbands,
                     dist_th,
                 )
-                plot_dendrogram(Z, dist_th, ramanbands, f"img/dist_dendrogram_{cluster_id}.png")
 
                 # 分割対象であるクラスタは、すべてのサブクラスタに新規のクラスタidを払い出す
                 for _id, r in subcluster.items():
@@ -181,7 +184,8 @@ def _bulkspectra(df, corr_th=0.2, dist_th=15, weighted=False):
             [reduced, d.mean(axis=1)],
             axis=1,
         )
-    reduced.columns = highests
+
+    reduced.columns = highests # 代表ラマンシフトの情報を付加
     print(reduced)
 
     return reduced, agg_ramanshifts
@@ -288,6 +292,8 @@ def bulkspectra(ctx, path, corr_th, dist_th, weighted, vis, output_path, img_pat
         ax = fig.add_subplot(2, 1, 2)
         ax.plot(reduced.mean())
         ax.xaxis.set_major_locator(ticker.MultipleLocator(50))
+        ax.set_xlabel("Ramanshifts (tick span is 50)")
+        plt.tight_layout()
         fig.savefig(img_path)
 
 
