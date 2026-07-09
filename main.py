@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from scipy.spatial.distance import squareform
 from scipy.cluster import hierarchy
 import json
+from pathlib import Path
 
 
 def plot_dendrogram(Z, th, labels, img_path):
@@ -35,41 +36,45 @@ def plot_dendrogram(Z, th, labels, img_path):
     return
 
 
-def _bulkspectra(df, corr_th=0.2, dist_th=15, weighted=False):
+def _bulkspectra(df, corr_th=0.2, dist_th=15, weighted=False, optional_img=[]):
     '''
-    処理の手順
-    1. ラマンスペクトル間の相関を計算し、クラスタリングを実施する
-        隣り合うバンドは物理的に相関が高くなる傾向を持つ
-    2. 1で得られたクラスタに対して、物理的な距離が近い要素を更にまとめる
-        1のクラスタでは飛び地のバンドも同一クラスタに属する可能性がある
-        飛び地のバンドを別クラスタに分割する
-    3. 2段階の処理で得られたクラスタについて、クラスタ内変数の重みを計算する
-        加重平均 of 平均
-    4. 各クラスタを新たな特徴量とし、重みに基づいて代表値を計算する
-    5. ラマンバンドの並びに基づき、新たな特徴量を昇順で並べる
+    低解像度化処理の手順
+    1. 偽相関をもつラマンスペクトルを集約するために、ラマンスペクトル間の相関を計算しクラスタリングする
+        - 隣り合うバンドは偽相関により相関係数が高くなる傾向を持つため、バンド間の非類似度は小さくなる
+        - 階層型クラスタリングにより偽相関を持つ変数が集約される
+    2. 1で得られたクラスタ内で、隣り合わないバンドを別のクラスタとして分割する
+        - カイザーを距離とし、非類似度が高い要素を分割する
+    3. 1と2のステップで得られたクラスタに対して、代表値を決定する
+        - 代表値は、平均値、加重平均、中央値などが候補となる
+    4. 計算された各クラスタの代表値を新たな特徴量とし、元のラマンバンドの並びに基づきソートする
     '''
 
-    def corr_clustering(df, threshold=0.2, img_path="img/corr_dendrogram.png"):
+    def corr_clustering(df, threshold=0.2, img_path=None):
+
         '''
-        異なるバンド間のラマン強度に基づくピアソンの相関係数を補正した指標を用いる
-        D = 1 - (corr(x, y) + 1) / 2
-        相関係数の範囲を -1 <= corr <= +1 から 0 <= (corr + 1) / 2 <= 1 へ変更し
-        1 から引くことで
-        0 から 1 の範囲の非類似度とする
+        非類似度: D = 1 - (corr(x, y) + 1) / 2
+        - 相関係数の範囲の変更: -1 <= corr <= +1 から 0 <= (corr + 1) / 2 <= 1
+        - 1 から補正後の相関係数を引くことで、正の相関を持つときに非類似度が低くなる指標に変換
         '''
+        # ピアソンの相関係数を非類似度に変換する
         dissimilarity = 1 - (df.corr() + 1) / 2
+
+        # 階層型クラスタリングの実行
         dissimilarity = squareform(dissimilarity)
         Z = hierarchy.linkage(dissimilarity, method="average")
-        plot_dendrogram(Z, threshold, df.columns, img_path)
         cluster_ids = hierarchy.fcluster(Z, threshold, criterion="distance")
 
-        # IDに基づいて同一クラスタのラマンシフトをまとめる
+        # 非類似度のカットオフしきい値に基づくクラスタの分割
         agg_ramanshifts = {}
         for n, _id in enumerate(cluster_ids):
             _id = int(_id)
             agg_ramanshifts.setdefault(_id, [])
             features = df.columns.astype(int)
             agg_ramanshifts[_id].append(features[n])
+
+        # 集約時のデンドログラムを出力
+        if img_path is not None:
+            plot_dendrogram(Z, threshold, df.columns, img_path)
 
         return agg_ramanshifts
 
@@ -104,68 +109,79 @@ def _bulkspectra(df, corr_th=0.2, dist_th=15, weighted=False):
             ids_ramanbands[_id].append(r)
         return ids_ramanbands, Z
 
-    def divide_discontinuos(agg_ramanshifts, dist_th):
-        # 各クラスタid についてラマンバンド間の距離に基づくクラスタリングを実施する
-        max_id = max(agg_ramanshifts.keys())
+    def divide_discontinuos(agg_ramanshifts, dist_th, img_path=None):
+
+        max_id = max(agg_ramanshifts.keys())  # 新たなサブクラスタが生じた場合のid払い出しに使用
         update_clusters = []
         remove_ids = []
         for cluster_id, ramanbands in agg_ramanshifts.items():
 
-            # あるクラスタidに属するラマンバンドが1つの場合は分割不要なのでスキップ
+            # クラスタの要素が1の場合はスキップ
             if len(ramanbands) == 1:
                 continue
 
+            # クラスタ内のカイザーに基づく距離行列を計算
             distance = calc_band_distance(ramanbands)
+
+            # 分割対象かもしれないクラスタを抽出する
             if distance.mean() > 10:
-                # もし平均距離が大きい場合は分割対象とみなす
                 subcluster, Z = bandwidth_clustering(
                     distance,
                     ramanbands,
                     dist_th,
                 )
-                plot_dendrogram(Z, dist_th, ramanbands, f"img/dist_dendrogram_{cluster_id}.png")
 
-                # サブクラスタに新たなidを払い出す
+                # 分割対象であるクラスタは、すべてのサブクラスタに新規のクラスタidを払い出す
                 for _id, r in subcluster.items():
                     update_clusters.append({max_id + _id: r})
-                # 分割されたことで増えたクラスタidの数を更新する
+                # 分割により増えたクラスタidの数を更新する
                 max_id += len(subcluster)
 
-                # 分割前のクラスタidは重複しないように削除する
+                # 分割対象の元のクラスタidを削除対象として記録する
                 remove_ids.append(cluster_id)
+
+                if img_path is not None:
+                    p = Path(img_path)
+                    img_path = str(p.with_name(f"{p.stem}_{cluster_id}{p.suffix}"))  # 出力ファイルにクラスタidを挿入
+                    plot_dendrogram(Z, dist_th, ramanbands, img_path)
+
         return update_clusters, remove_ids
 
-    # 相関係数を用いてクラスタリングする
-    # クラスタIDに基づいて同一クラスタのラマンシフトをまとめる
-    agg_ramanshifts = corr_clustering(df, corr_th)
+    # Step 1: 偽相関を持つ変数を階層型クラスタリングを用いて集約する
+    img_path = optional_img[0] if optional_img else None
+    agg_ramanshifts = corr_clustering(df, corr_th, img_path=img_path)
 
-    # 各クラスタのバンド間の距離に基づきクラスタを分割し、
-    # 分割後のサブクラスタ群と、重複するクラスタIDを返却する
-    subs, duplicate_ids = divide_discontinuos(agg_ramanshifts, dist_th)
+    # Step 2: Step 1 で分類されたクラスタ内でカイザー間の距離が大きい要素を分割する
+    img_path = optional_img[1] if optional_img else None
+    subs, duplicate_ids = divide_discontinuos(agg_ramanshifts, dist_th, img_path=img_path)
+
+    # Step 2-after: 分割後のクラスタの再登録と分割前のクラスタの削除
     for s in subs:
         agg_ramanshifts.update(s)
     for d in duplicate_ids:
         agg_ramanshifts.pop(d)
 
-    # ラマンバンドの波長が小さい順にソートする
+    # ラマンバンドの波長が小さい順にソートし、クラスタidを振りなおす
     agg_ramanshifts = sorted(agg_ramanshifts.items(), key=lambda x: min(x[1]))
-
-    # cluster idを振り直す
     agg_ramanshifts = {i: v[1] for i, v in enumerate(agg_ramanshifts)}
 
+    # Step 3: クラスタ内の代表値を用いて低解像度なラマンスペクトルの再構築
     reduced = pd.DataFrame()
     highests = []
     for _, ramanshifts in agg_ramanshifts.items():
-        ramanshifts = [str(r) for r in ramanshifts]
 
+        # 偽相関を持つラマンスペクトルを抽出
+        ramanshifts = [str(r) for r in ramanshifts]
         d = df.loc[:, ramanshifts]
 
-        # 各クラスタにおける平均強度ベースの重みを計算する
+        # クラスタ内ラマンシフトの平均強度の大きさに基づく重みを計算
         weights = d.mean() / d.mean().sum()
-        # クラスタ内で最も強度が高いラマンバンドをスペクトル名の代表値とする
+
+        # 代表ラマンシフトとして、重みが最大のラマンシフトを選択
         highests.append(weights.index[weights.argmax()])
 
         if weighted:
+            # 平均化前に重みづけする
             for n, (column, _) in enumerate(d.items()):
                 d.loc[:, column] = weights.iloc[n] * d.loc[:, column]
 
@@ -173,7 +189,8 @@ def _bulkspectra(df, corr_th=0.2, dist_th=15, weighted=False):
             [reduced, d.mean(axis=1)],
             axis=1,
         )
-    reduced.columns = highests
+
+    reduced.columns = highests # 代表ラマンシフトの情報を付加
     print(reduced)
 
     return reduced, agg_ramanshifts
@@ -246,25 +263,50 @@ def peakpick(ctx, path, vis, output_path, label, distance, img_path):
 
 @cmd.command()
 @click.argument("path")
-@click.option("--corr_th", default=0.2)
-@click.option("--dist_th", default=15)
-@click.option("--weighted", is_flag=False)
-@click.option("--vis", is_flag=True)
+@click.option("--meta_col", "-m", multiple=True, type=int, default=[], help="default: []")
+@click.option("--corr_th", default=0.2, help="default: 0.2")
+@click.option("--dist_th", default=15, help="default: 15")
+@click.option("--weighted", is_flag=False, help="default: false")
+@click.option("--vis", is_flag=True, help="output or not: default: true")
 @click.option("--output_path", "-op", default="output/bulkspectra.csv")
 @click.option("--img_path", "-ip", default="img/bulkspectra.png")
 @click.option("--comp_path", "-cp", default="comp/bulkspectra.json")
+@click.option("--false_corr_img_path", "-fcip", default="img/dendrogram_false_corr.png")
+@click.option("--not_neighbor_img_path", "-nnip", default="img/dendrogram_not_neighbor.png")
 @click.pass_context
-def bulkspectra(ctx, path, corr_th, dist_th, weighted, vis, output_path, img_path, comp_path):
-    df = pd.read_csv(path, header=0, index_col=0)
+def bulkspectra(
+    ctx,
+    path,
+    meta_col,
+    corr_th,
+    dist_th,
+    weighted,
+    vis,
+    output_path,
+    img_path,
+    comp_path,
+    false_corr_img_path,
+    not_neighbor_img_path,
+):
+    df = pd.read_csv(path, header=0)
     click.echo(df)
+    if meta_col:
+        click.echo(f"! user operation: set metadata columns {meta_col}")
+        meta = df.iloc[:, list(meta_col)]
+        df = df.drop(columns=df.columns[list(meta_col)])
+        click.echo(df)
+    click.echo(df)
+    click.echo(meta)
+    origin_dim = len(df.columns)
 
+    # 偽相関な変数の集約 + カイザー(cm^-1)間の距離に基づく次元圧縮
     reduced, agg_ramanshifts = _bulkspectra(
         df,
         corr_th=corr_th,
         dist_th=dist_th,
         weighted=weighted,
+        optional_img=[false_corr_img_path, not_neighbor_img_path],
     )
-    reduced.to_csv(output_path)
 
     if comp_path is not None:
         agg_ramanshifts = {k: [int(vv) for vv in v] for k, v in agg_ramanshifts.items()}
@@ -280,7 +322,17 @@ def bulkspectra(ctx, path, corr_th, dist_th, weighted, vis, output_path, img_pat
         ax = fig.add_subplot(2, 1, 2)
         ax.plot(reduced.mean())
         ax.xaxis.set_major_locator(ticker.MultipleLocator(50))
+        ax.set_xlabel("Ramanshifts (tick span is 50)")
+        plt.tight_layout()
         fig.savefig(img_path)
+
+    # 低解像度化後のファイル出力
+    click.echo(f"reduction: origin({origin_dim}) > after({len(reduced.columns)})")
+    if meta_col:
+        reduced = pd.concat([meta, reduced], axis=1)
+        click.echo(f"Output with metadata(+ {len(meta.columns)} columns)")
+    reduced.to_csv(output_path)
+
 
 
 @cmd.command()
